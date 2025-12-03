@@ -673,16 +673,20 @@ update_thread_priority (struct thread *t)
 
   int new_priority = t->base_priority;
 
-  /* 遍历 t 持有的所有锁，找出这些锁上等待队列中最大的优先级 */
+  /* 遍历 t 持有的所有锁，动态从每把锁的 semaphore.waiters 中取最大等待者优先级 */
   struct list_elem *e;
   for (e = list_begin (&t->locks_held); e != list_end (&t->locks_held); e = list_next (e))
     {
       struct lock *l = list_entry (e, struct lock, elem);
 
-      
-      if (l->max_waiter_priority > new_priority)
-        new_priority = l->max_waiter_priority;
-
+      /* 如果该锁的信号量有等待者，取第一个（因为我们保证 waiters 已经按 priority 排序） */
+      if (!list_empty (&l->semaphore.waiters))
+        {
+          struct thread *top = list_entry (list_front (&l->semaphore.waiters),
+                                           struct thread, elem);
+          if (top->priority > new_priority)
+            new_priority = top->priority;
+        }
     }
 
   int old = t->priority;

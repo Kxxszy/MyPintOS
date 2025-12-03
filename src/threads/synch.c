@@ -58,20 +58,18 @@ sema_init (struct semaphore *sema, unsigned value)
    interrupts disabled, but if it sleeps then the next scheduled
    thread will probably turn interrupts back on. */
 void
-sema_down (struct semaphore *sema) 
+sema_down (struct semaphore *sema)
 {
   enum intr_level old_level;
 
-  ASSERT (sema != NULL);
-  ASSERT (!intr_context ());
-
   old_level = intr_disable ();
-  while (sema->value == 0) {
-    /* 按优先级插入等待队列，而不是队尾 */
-    list_insert_ordered (&sema->waiters, &thread_current ()->elem,
-                        thread_priority_compare, NULL);
-    thread_block ();
-  }
+  while (sema->value == 0)
+    {
+      /* insert current thread into waiters in priority order */
+      list_insert_ordered (&sema->waiters, &thread_current()->elem,
+                           thread_priority_compare, NULL);
+      thread_block ();
+    }
   sema->value--;
   intr_set_level (old_level);
 }
@@ -107,32 +105,19 @@ sema_try_down (struct semaphore *sema)
 
    This function may be called from an interrupt handler. */
 void
-sema_up (struct semaphore *sema) 
+sema_up (struct semaphore *sema)
 {
-  enum intr_level old_level;
+  enum intr_level old_level = intr_disable ();
 
-  ASSERT (sema != NULL);
-
-  old_level = intr_disable ();
-  if (!list_empty (&sema->waiters)) {
-    /* 手动查找最高优先级线程 */
-    struct list_elem *e, *max_elem = list_begin (&sema->waiters);
-    int max_priority = list_entry (max_elem, struct thread, elem)->priority;
-    
-    for (e = list_next (max_elem); e != list_end (&sema->waiters); e = list_next (e)) {
+  if (!list_empty (&sema->waiters))
+    {
+      /* pop highest-priority waiter (front) */
+      struct list_elem *e = list_pop_front (&sema->waiters);
       struct thread *t = list_entry (e, struct thread, elem);
-      if (t->priority > max_priority) {
-        max_elem = e;
-        max_priority = t->priority;
-      }
+      thread_unblock (t);
     }
-    
-    list_remove (max_elem);
-    thread_unblock (list_entry (max_elem, struct thread, elem));
-  }
   sema->value++;
   intr_set_level (old_level);
-  thread_yield();
 }
 
 static void sema_test_helper (void *sema_);
@@ -219,9 +204,7 @@ lock_acquire (struct lock *lock)
     {
       cur->waiting_lock = lock;
 
-      /* 更新 lock 上记录的最大等待者优先级（供 update_thread_priority 使用） */
-      if (cur->priority > lock->max_waiter_priority)
-        lock->max_waiter_priority = cur->priority;
+      
 
       /* 先把捐赠沿锁持有链传下去 */
       donate_priority (lock->holder, cur->priority);
@@ -271,14 +254,13 @@ lock_release (struct lock *lock)
   /* 先从持有者的 locks_held 列表移除 */
   list_remove (&lock->elem);
 
-  /* 不要在 sema_up 之前清空 max_waiter_priority（否则失去等待者信息） */
   lock->holder = NULL;
 
-  /* 先唤醒等待该锁的最高优先级线程 */
+  /* 唤醒等待该锁的最高优先级线程（sema_up 应该唤醒 waiters 中的第一个） */
   sema_up (&lock->semaphore);
 
-  /* 现在清理该锁的元信息（可选，根据你的实现） */
-  lock->max_waiter_priority = PRI_MIN;
+  /* 可选：不强制依赖此字段 */
+  /* lock->max_waiter_priority = PRI_MIN; */
 
   /* 重新计算当前线程（释放锁者）的优先级 */
   update_thread_priority (thread_current ());
