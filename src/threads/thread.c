@@ -665,85 +665,70 @@ thread_check_sleepers (void)
   }
 }
 
+/* 计算并设置线程的 current priority（考虑 base_priority 和它持有的锁上的等待者） */
 void
-update_thread_priority (struct thread *t) 
+update_thread_priority (struct thread *t)
 {
-  int max_priority = t->base_priority;
+  enum intr_level old_level = intr_disable ();
+
+  int new_priority = t->base_priority;
+
+  /* 遍历 t 持有的所有锁，找出这些锁上等待队列中最大的优先级 */
   struct list_elem *e;
+  for (e = list_begin (&t->locks_held); e != list_end (&t->locks_held); e = list_next (e))
+    {
+      struct lock *l = list_entry (e, struct lock, elem);
 
-  /* Check all locks held by this thread for higher priority waiters */
-  for (e = list_begin (&t->locks_held); e != list_end (&t->locks_held); 
-       e = list_next (e))
-  {
-    struct lock *lock = list_entry (e, struct lock, elem);
-    if (lock->max_waiter_priority > max_priority)
-      max_priority = lock->max_waiter_priority;
-  }
+      
+      if (l->max_waiter_priority > new_priority)
+        new_priority = l->max_waiter_priority;
 
-  /* Update thread priority if changed */
-  if (t->priority != max_priority)
-  {
-    t->priority = max_priority;
-    
-    /* If this thread is in ready list, reinsert with new priority */
-    if (t->status == THREAD_READY)
+    }
+
+  int old = t->priority;
+  t->priority = new_priority;
+
+  /* 如果线程在 ready_list 中，重新安置以维持就绪队列有序（高优先级排前） */
+  if (t->status == THREAD_READY && t->priority != old)
     {
       list_remove (&t->elem);
-      
-      struct list_elem *e;
-      for (e = list_begin (&ready_list); e != list_end (&ready_list);
-           e = list_next (e))
-      {
-        struct thread *thread_in_list = list_entry (e, struct thread, elem);
-        if (t->priority > thread_in_list->priority)
-        {
-          list_insert (e, &t->elem);
-          break;
-        }
-      }
-      
-      if (e == list_end (&ready_list))
-        list_push_back (&ready_list, &t->elem);
+      list_insert_ordered (&ready_list, &t->elem, thread_priority_compare, NULL);
     }
-  }
+
+  intr_set_level (old_level);
 }
 
 
-
+/* donate_priority: 把 new_priority 递归捐赠给 holder 直到链尾 */
 void
-donate_priority (struct thread *holder, int new_priority) 
+donate_priority (struct thread *holder, int new_priority)
 {
-  if (holder == NULL || holder->priority >= new_priority)
+  if (holder == NULL)
     return;
 
-  holder->priority = new_priority;
-  
-  if (holder->waiting_lock != NULL && 
-      holder->waiting_lock->holder != NULL)
-  {
-    donate_priority (holder->waiting_lock->holder, new_priority);
-  }
-  
-  /* 如果线程在就绪队列中，重新排序 */
-  if (holder->status == THREAD_READY)
-  {
-    list_remove (&holder->elem);
-    
-    struct list_elem *e;
-    for (e = list_begin (&ready_list); e != list_end (&ready_list);
-         e = list_next (e))
+  enum intr_level old_level = intr_disable ();
+
+  if (holder->priority >= new_priority)
     {
-      struct thread *thread_in_list = list_entry (e, struct thread, elem);
-      if (holder->priority > thread_in_list->priority)
-      {
-        list_insert (e, &holder->elem);
-        break;
-      }
+      intr_set_level (old_level);
+      return;
     }
-    
-    if (e == list_end (&ready_list))
-      list_push_back (&ready_list, &holder->elem);
-  }
+
+  /* 直接提升 holder 的 priority 到 new_priority（但不要改 base_priority） */
+  holder->priority = new_priority;
+
+  /* 如果 holder 在 ready_list 中需要重新安置 */
+  if (holder->status == THREAD_READY)
+    {
+      list_remove (&holder->elem);
+      list_insert_ordered (&ready_list, &holder->elem, thread_priority_compare, NULL);
+    }
+
+  /* 继续沿等待链传递 */
+  if (holder->waiting_lock != NULL && holder->waiting_lock->holder != NULL)
+    donate_priority (holder->waiting_lock->holder, new_priority);
+
+  intr_set_level (old_level);
 }
 /* 线程优先级比较函数 */
 bool

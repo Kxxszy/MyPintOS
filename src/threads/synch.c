@@ -213,31 +213,28 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
-  struct thread *current = thread_current ();
-  
-  if (lock->holder != NULL) 
-  {
-    
-    current->waiting_lock = lock;
-    
-    if (current->priority > lock->max_waiter_priority) {
-      lock->max_waiter_priority = current->priority;
-      /* 添加这行：立即更新持有者的优先级 */
-      update_thread_priority(lock->holder);
-    }
-    
-    donate_priority(lock->holder, current->priority);
+  struct thread *cur = thread_current ();
 
-    
-  }
+  if (lock->holder != NULL)
+    {
+      cur->waiting_lock = lock;
+
+      /* 更新 lock 上记录的最大等待者优先级（供 update_thread_priority 使用） */
+      if (cur->priority > lock->max_waiter_priority)
+        lock->max_waiter_priority = cur->priority;
+
+      /* 先把捐赠沿锁持有链传下去 */
+      donate_priority (lock->holder, cur->priority);
+    }
 
   sema_down (&lock->semaphore);
-  
-  current->waiting_lock = NULL;
-  lock->holder = current;
-  
-  /* 确保锁被添加到持有锁列表 */
-  list_push_front (&current->locks_held, &lock->elem);
+
+  /* 成功拿到锁 */
+  cur->waiting_lock = NULL;
+  lock->holder = cur;
+  list_push_front (&cur->locks_held, &lock->elem);
+
+  /* 拿到锁后没有必要立刻改变 cur->priority（update_thread_priority 会在释放时处理） */
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -266,20 +263,27 @@ lock_try_acquire (struct lock *lock)
    make sense to try to release a lock within an interrupt
    handler. */
 void
-lock_release (struct lock *lock) 
+lock_release (struct lock *lock)
 {
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
-  /* 从持有锁列表中移除 */
+  /* 先从持有者的 locks_held 列表移除 */
   list_remove (&lock->elem);
-  
-  lock->max_waiter_priority = PRI_MIN;
+
+  /* 不要在 sema_up 之前清空 max_waiter_priority（否则失去等待者信息） */
   lock->holder = NULL;
+
+  /* 先唤醒等待该锁的最高优先级线程 */
   sema_up (&lock->semaphore);
-  
-  /* 重新计算当前线程的优先级 */
+
+  /* 现在清理该锁的元信息（可选，根据你的实现） */
+  lock->max_waiter_priority = PRI_MIN;
+
+  /* 重新计算当前线程（释放锁者）的优先级 */
   update_thread_priority (thread_current ());
+
+  /* 让调度器重新判断 */
   thread_yield ();
 }
 /* Returns true if the current thread holds LOCK, false
