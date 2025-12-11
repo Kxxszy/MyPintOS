@@ -92,8 +92,6 @@ struct thread
 
     struct list_elem allelem;           /* List element for all threads list. */
 
- 
-    
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
     int base_priority;          /* 原始优先级 */
