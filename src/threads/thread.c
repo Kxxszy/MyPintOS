@@ -242,26 +242,9 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  //list_push_back (&ready_list, &t->elem);  //this is the problem line
 
-  /* 改为按优先级插入队列 */
-  struct list_elem *e;
-  for (e = list_begin (&ready_list); e != list_end (&ready_list);
-       e = list_next (e))
-  {
-    struct thread *thread_in_list = list_entry (e, struct thread, elem);
-    if (t->priority > thread_in_list->priority)
-    {
-      list_insert (e, &t->elem);
-      break;
-    }
-  }
-  
-  /* 如果队列为空或优先级最低，插入末尾 */
-  if (e == list_end (&ready_list))
-    list_push_back (&ready_list, &t->elem);
-    
-
+  /* 按优先级从大到小插入 ready_list */
+  list_insert_ordered (&ready_list, &t->elem, thread_priority_compare, NULL);
 
   t->status = THREAD_READY;
   intr_set_level (old_level);

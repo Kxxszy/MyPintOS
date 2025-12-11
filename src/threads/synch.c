@@ -60,16 +60,22 @@ sema_init (struct semaphore *sema, unsigned value)
 void
 sema_down (struct semaphore *sema)
 {
-  enum intr_level old_level;
+  enum intr_level old_level = intr_disable ();
 
-  old_level = intr_disable ();
   while (sema->value == 0)
     {
-      /* insert current thread into waiters in priority order */
-      list_insert_ordered (&sema->waiters, &thread_current()->elem,
-                           thread_priority_compare, NULL);
+      /*  防止重复插入（只在第一次阻塞时插入） */
+      if (thread_current ()->status != THREAD_BLOCKED)
+        {
+          list_insert_ordered (&sema->waiters,
+                               &thread_current ()->elem,
+                               thread_priority_compare,
+                               NULL);
+        }
+
       thread_block ();
     }
+
   sema->value--;
   intr_set_level (old_level);
 }
@@ -105,19 +111,26 @@ sema_try_down (struct semaphore *sema)
 
    This function may be called from an interrupt handler. */
 void
-sema_up (struct semaphore *sema)
+sema_up (struct semaphore *sema) 
 {
   enum intr_level old_level = intr_disable ();
 
   if (!list_empty (&sema->waiters))
     {
-      /* pop highest-priority waiter (front) */
-      struct list_elem *e = list_pop_front (&sema->waiters);
-      struct thread *t = list_entry (e, struct thread, elem);
+      /* 确保 waiters 按优先级排序 */
+      list_sort (&sema->waiters, thread_priority_compare, NULL);
+
+      /*  弹出最高优先级线程 */
+      struct thread *t = list_entry (list_pop_front (&sema->waiters),
+                                     struct thread, elem);
       thread_unblock (t);
     }
+
   sema->value++;
   intr_set_level (old_level);
+
+  /*  关键：若唤醒了更高优先级线程，立刻让出 CPU */
+  thread_yield ();
 }
 
 static void sema_test_helper (void *sema_);
